@@ -1,13 +1,34 @@
 import streamlit as st
 import requests
 import os
+from typing import Set
 
 GO_SERVER_URL = os.getenv("GO_LLM_URL", "http://localhost:8080")
 
 st.header("Documentation Assistant")
 
+if "user_prompt_history" not in st.session_state:
+    st.session_state["user_prompt_history"] = []
+
+if "chat_answers_history" not in st.session_state:
+    st.session_state["chat_answers_history"] = []
+
+
 # Add tabs for different functionalities
 tab1, tab2 = st.tabs(["Query", "Ingest New Docs"])
+
+
+def create_sources_string(source_urls: Set[str]) -> str:
+    """Create a formatted string of source URLs."""
+    if not source_urls:
+        return ""
+    sources_list = list(source_urls)
+    sources_list.sort()
+    sources_string = "sources:\n"
+    for i, source in enumerate(sources_list):
+        sources_string += f"{i+1}. {source}\n"
+    return sources_string
+
 
 # Tab 1: Query Documentation
 with tab1:
@@ -25,17 +46,28 @@ with tab1:
 
     if prompt:
         with st.spinner("Generating response..."):
-            result = call_go_llm(prompt)
-            if result.get("error"):
-                st.error("Error from Go server: " + result["error"])
+            generated_response = call_go_llm(prompt)
+            if generated_response.get("error"):
+                st.error("Error from Go server: " + generated_response["error"])
             else:
-                st.write("**Answer:**")
-                st.write(result.get("result") or result)
-                
-                # Show source documents if available
-                if result.get("source_documents"):
-                    with st.expander("View Source Documents"):
-                        st.json(result["source_documents"])
+                sources = set(
+                    [doc["Metadata"]["source"] for doc in generated_response["source_documents"]]
+                )
+
+                formatted_response = (
+                    generated_response["result"] + "\n\n" + create_sources_string(sources)
+                )
+
+                st.session_state["user_prompt_history"].append(prompt)
+                st.session_state["chat_answers_history"].append(formatted_response)
+
+                if st.session_state["chat_answers_history"]:
+                    for generated_response, user_query in zip(
+                        st.session_state["chat_answers_history"],
+                        st.session_state["user_prompt_history"],
+                    ):
+                        st.chat_message("user").write(user_query)
+                        st.chat_message("assistant").write(generated_response)
 
 # Tab 2: Ingest New Documentation
 with tab2:
