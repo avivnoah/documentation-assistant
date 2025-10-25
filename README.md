@@ -113,17 +113,11 @@ The ingestion pipeline (crawling, splitting, embedding and storing) is intention
 
 ## Contributing
 
-If you plan to extend the project, consider moving non-public helper code into `internal/` packages and public reusable components into `pkg/`. Add unit tests for ingestion and query logic where possible.
-
-## License
-
-Add your preferred license here (e.g., MIT, Apache-2.0). If you want, I can add a `LICENSE` file.
-
 ---
 
-If you'd like, I can also:
+Todos
 - add a `README` badge or CI config (GitHub Actions) to run `go vet`/`go test`/`go build`,
 - add a `requirements.txt` for the Python side,
 - create a simple `.github/workflows/ci.yml` to run the build on pushes.
-
-Tell me which additional items you want and I will add them.
+- move the non-public tools/helpers code into `internal/` packages and public reusable components into `pkg/`.
+- Add unit tests for ingestion and query logic where possible.
