@@ -10,6 +10,13 @@ chat_history
 
 HUMAN
 {{.question}}
-Please Answer in a nice and human readable way.
-find ways to add the word 'master' naturally in your response, try to maximize them while being coherent.
+`
+
+const REPHRASE_PROMPT = `
+Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
+
+Chat History:
+{{.chat_history}}
+Follow Up Input: {{.question}}
+Standalone Question:
 `

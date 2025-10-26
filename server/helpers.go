@@ -6,9 +6,8 @@ import (
 	"logging"
 
 	ingestion "github.com/avivnoah/documentation-assistant/pkg/ingestion"
-	localPrompt "github.com/avivnoah/documentation-assistant/prompt"
 	"github.com/tmc/langchaingo/chains"
-	"github.com/tmc/langchaingo/prompts"
+	"github.com/tmc/langchaingo/memory"
 	"github.com/tmc/langchaingo/schema"
 	"github.com/tmc/langchaingo/vectorstores"
 )
@@ -22,8 +21,7 @@ type batchJob struct {
 func Ingest(ctx context.Context, logger logging.Logger, store *vectorstores.VectorStore, urlToLearn string) error {
 	return ingestion.Ingest(ctx, logger, store, urlToLearn)
 }
-
-func runLLM(ctx context.Context, logger logging.Logger, store *vectorstores.VectorStore, numDocs int, query string) (map[string]any, error) {
+func runLLM(ctx context.Context, logger logging.Logger, store *vectorstores.VectorStore, numDocs int, query string, conversationMemory *memory.ConversationBuffer) (map[string]any, error) {
 	modelName := "gemini"
 	llm, err := helpers.InitializeLLM(modelName, "", "")
 	if err != nil {
@@ -31,27 +29,114 @@ func runLLM(ctx context.Context, logger logging.Logger, store *vectorstores.Vect
 		return nil, err
 	}
 
-	retriever := vectorstores.ToRetriever(*store, numDocs)
-
-	llmChain := chains.NewLLMChain(
-		llm,
-		prompts.NewPromptTemplate(
-			localPrompt.RAG_PROMPT,
-			[]string{"context", "question"},
-		),
+	stuffDocumentsChain := chains.LoadStuffQA(llm)
+	condenseQuestionGeneratorChain := chains.LoadCondenseQuestionGenerator(llm)
+	qaChain := chains.NewConversationalRetrievalQA(
+		stuffDocumentsChain,
+		condenseQuestionGeneratorChain,
+		vectorstores.ToRetriever(*store, numDocs),
+		conversationMemory,
 	)
-	stuffDocumentsChain := chains.NewStuffDocuments(llmChain)
-	qaChain := chains.NewRetrievalQA(stuffDocumentsChain, retriever)
 	qaChain.ReturnSourceDocuments = true
+	// qaChain.RephraseQuestion = true - I don't know about this one yet.
 
 	logger.Info(ctx, "Running LLM query", map[string]any{"query": query})
-	result, err := qaChain.Call(ctx, map[string]any{
-		"query": query,
-	})
+
+	// The chain will call LoadMemoryVariables internally which returns a STRING
+	inputValues := map[string]any{
+		"question": query,
+	}
+	// Use the chains.Call wrapper so memory.LoadMemoryVariables is executed
+	// (it will also call SaveContext after the chain completes).
+	result, err := chains.Call(ctx, qaChain, inputValues)
 	if err != nil {
 		logger.Error(ctx, "Failed to run QA chain", map[string]any{"error": err.Error()})
 		return nil, err
 	}
+
+	formatted_result := map[string]any{
+		"query":            result["query"],
+		"result":           result["text"],
+		"source_documents": result["source_documents"],
+	}
+
+	logger.Info(ctx, "LLM query completed successfully", map[string]any{"result": formatted_result["result"]})
+	return formatted_result, nil
+}
+
+func runLLM2_BKP(ctx context.Context, logger logging.Logger, store *vectorstores.VectorStore, numDocs int, query string, chatHistory schema.ChatMessageHistory, conversationMemory *memory.ConversationBuffer) (map[string]any, error) {
+	modelName := "gemini"
+	llm, err := helpers.InitializeLLM(modelName, "", "")
+	if err != nil {
+		logger.Error(ctx, "Failed to initialize OpenAI LLM", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+
+	// llmChain := chains.NewLLMChain(
+	// 	llm,
+	// 	prompts.NewPromptTemplate(
+	// 		localPrompt.REPHRASE_PROMPT,
+	// 		[]string{"chat_history", "question"},
+	// 	),
+	// )
+	// stuffDocumentsChain := chains.NewStuffDocuments(llmChain)
+
+	stuffDocumentsChain := chains.LoadStuffQA(llm)
+	condenseQuestionGeneratorChain := chains.LoadCondenseQuestionGenerator(llm)
+	// historyAwareRetriever := chains.NewConversationalRetrievalQAFromLLM(
+	// 	llm,
+	// 	vectorstores.ToRetriever(*store, numDocs),
+	// 	memory.NewConversationBuffer(memory.WithChatHistory(chatHistory)),
+	// )
+	// conversationMemory := memory.NewConversationBuffer(
+	// 	memory.WithChatHistory(chatHistory),
+	// 	memory.WithReturnMessages(true),
+	// 	memory.WithInputKey("question"), // Set input key
+	// 	memory.WithOutputKey("text"),    // Set output key
+	// 	memory.WithHumanPrefix("Human"),
+	// 	memory.WithAIPrefix("AI"),
+	// )
+
+	qaChain := chains.NewConversationalRetrievalQA(
+		stuffDocumentsChain,
+		condenseQuestionGeneratorChain,
+		// historyAwareRetriever.Retriever,
+		vectorstores.ToRetriever(*store, numDocs),
+		//memory.NewConversationBuffer(memory.WithReturnMessages(true)),
+		conversationMemory,
+	)
+	qaChain.ReturnSourceDocuments = true
+	qaChain.RephraseQuestion = true
+	// qaChain.ReturnGeneratedQuestion = true
+	// qaChain := chains.NewConversationalRetrievalQA(stuffDocumentsChain, condenseQuestionGeneratorChain, historyAwareRetriever.Retriever, memory.NewConversationBuffer(memory.WithChatHistory(chatHistory)))
+	// panic(qaChain.Memory.GetMemoryKey(ctx))
+	logger.Info(ctx, "Running LLM query", map[string]any{"query": query})
+	chatMessages, err := chatHistory.Messages(ctx)
+	if err != nil {
+		logger.Error(ctx, "Failed to get chat history", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+
+	logger.Info(ctx, "Chat history", map[string]any{"chat_history": chatMessages})
+	values := map[string]any{
+		"question": query,
+		// "history":  chatMessages,
+		// "input":    formattedChatMessages,
+	}
+	mmkey := qaChain.Memory.GetMemoryKey(ctx)
+	logger.Info(ctx, qaChain.InputKey, map[string]any{"input_key_in_values": values[qaChain.InputKey]})
+	logger.Info(ctx, mmkey, map[string]any{"memory_key_in_values": values[mmkey]})
+	result, err := qaChain.Call(ctx, values)
+	if err != nil {
+		logger.Error(ctx, "Failed to run QA chain", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+
+	err = conversationMemory.SaveContext(ctx, values, result)
+	if err != nil {
+		logger.Error(ctx, "Failed to save context to memory", map[string]any{"error": err.Error()})
+	}
+
 	formatted_result := map[string]any{
 		"query":            result["query"],
 		"result":           result["text"],

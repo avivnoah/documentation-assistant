@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+
+	"github.com/tmc/langchaingo/memory"
+	"github.com/tmc/langchaingo/schema"
 )
 
 type QueryRequest struct {
-	Query   string `json:"query"`
-	NumDocs int    `json:"num_docs"`
+	Query       string     `json:"query"`
+	NumDocs     int        `json:"num_docs"`
+	ChatHistory [][]string `json:"chat_history,omitempty"` // Array of [role, content] pairs
 }
 
 type QueryResponse struct {
@@ -46,9 +50,18 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		req.NumDocs = 5
 	}
 
-	// Import and call your runLLM function
-	result, err := runLLM(context.Background(), s.logger, &s.store, req.NumDocs, req.Query)
+	// Convert chat history from JSON format
+	chatHistory := convertChatHistory(req.ChatHistory)
 
+	// Create a NEW conversationMemory for THIS request with the chatHistory
+	conversationMemory := memory.NewConversationBuffer(
+		memory.WithChatHistory(chatHistory),
+		memory.WithInputKey("question"),
+		memory.WithOutputKey("text"),
+	)
+
+	// Import and call your runLLM function (pass the pointer directly)
+	result, err := runLLM(context.Background(), s.logger, &s.store, req.NumDocs, req.Query, conversationMemory)
 	if err != nil {
 		respondWithError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -59,6 +72,29 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		Query:           req.Query,
 		SourceDocuments: result["source_documents"],
 	})
+}
+
+// convertChatHistory converts the JSON chat history format to schema.ChatMessageHistory
+func convertChatHistory(history [][]string) schema.ChatMessageHistory {
+	chatHistory := memory.NewChatMessageHistory()
+
+	for _, msg := range history {
+		if len(msg) != 2 {
+			continue // Skip malformed entries
+		}
+
+		role := msg[0]
+		content := msg[1]
+
+		switch role {
+		case "human", "user":
+			chatHistory.AddUserMessage(context.Background(), content)
+		case "ai", "assistant":
+			chatHistory.AddAIMessage(context.Background(), content)
+		}
+	}
+
+	return chatHistory
 }
 
 // handleIngest processes documentation ingestion requests
